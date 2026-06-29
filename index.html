@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Golfigami</title>
+<meta name="description" content="Has that 4-round scorecard ever been shot on the PGA Tour?">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f0;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:2rem 1rem}
+.wrap{width:100%;max-width:660px;display:flex;flex-direction:column;gap:1.25rem}
+.card{background:white;border-radius:16px;padding:1.75rem;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+h1{font-size:22px;font-weight:600;color:#1a1a1a;margin-bottom:3px}
+.sub{font-size:13px;color:#888;margin-bottom:1.5rem}
+h2{font-size:15px;font-weight:600;color:#1a1a1a;margin-bottom:1rem}
+.input-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.25rem}
+.score-group{display:flex;flex-direction:column;gap:5px}
+.score-group label{font-size:11px;color:#888;font-weight:600;letter-spacing:.06em}
+.score-group input{width:66px;text-align:center;font-size:22px;font-weight:500;color:#1a1a1a;border:1.5px solid #e0e0e0;border-radius:10px;padding:9px 6px;outline:none;transition:border-color .15s}
+.score-group input:focus{border-color:#3b6d11}
+.dash{font-size:20px;color:#ccc;padding-bottom:9px}
+button.primary{height:46px;padding:0 1.25rem;font-size:15px;font-weight:500;background:#3b6d11;color:white;border:none;border-radius:10px;cursor:pointer;transition:background .15s;align-self:flex-end}
+button.primary:hover{background:#27500a}
+.banner{border-radius:12px;padding:1.1rem 1.35rem;margin-bottom:.85rem}
+.banner.golfigami{background:#eaf3de;border:1px solid #c0dd97}
+.banner.seen{background:#fcebeb;border:1px solid #f7c1c1}
+.banner-title{font-size:17px;font-weight:600;margin-bottom:3px}
+.golfigami .banner-title{color:#27500a}
+.seen .banner-title{color:#791f1f}
+.banner-sub{font-size:13px;line-height:1.6}
+.golfigami .banner-sub{color:#3b6d11;opacity:.9}
+.seen .banner-sub{color:#a32d2d;opacity:.9}
+.list{background:#fafafa;border:1px solid #ebebeb;border-radius:12px;overflow:hidden}
+.list-header{font-size:11px;font-weight:600;color:#888;letter-spacing:.06em;padding:10px 14px;border-bottom:1px solid #ebebeb;background:white;display:flex;justify-content:space-between;align-items:center}
+.list-header span{font-weight:400;font-size:11px;color:#bbb;letter-spacing:0}
+.row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #f0f0f0;cursor:pointer;transition:background .1s;gap:12px}
+.row:last-child{border-bottom:none}
+.row:hover{background:#f5f5f0}
+.row-left{display:flex;flex-direction:column;gap:2px;min-width:0}
+.player{font-size:14px;font-weight:500;color:#1a1a1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rounds{font-size:12px;color:#888;font-variant-numeric:tabular-nums}
+.row-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.badge.new{background:#eaf3de;color:#27500a}
+.badge.rare{background:#faeeda;color:#633806}
+.badge.common{background:#f0f0f0;color:#666}
+.static-row{cursor:default!important}
+.static-row:hover{background:white!important}
+.more{font-size:12px;color:#aaa;padding:9px 14px}
+.meta{font-size:12px;color:#aaa}
+.year-tag{font-size:12px;font-weight:500;color:#1a1a1a}
+.loading{color:#aaa;font-size:14px;padding:1rem}
+.error{color:#a32d2d;font-size:14px;padding:1rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>⛳ Golfigami</h1>
+    <p class="sub" id="sub-line">PGA Tour 2001–2026 · loading...</p>
+    <div class="input-row">
+      <div class="score-group"><label>ROUND 1</label><input type="number" id="r1" min="55" max="95" placeholder="68"></div>
+      <span class="dash">–</span>
+      <div class="score-group"><label>ROUND 2</label><input type="number" id="r2" min="55" max="95" placeholder="70"></div>
+      <span class="dash">–</span>
+      <div class="score-group"><label>ROUND 3</label><input type="number" id="r3" min="55" max="95" placeholder="65"></div>
+      <span class="dash">–</span>
+      <div class="score-group"><label>ROUND 4</label><input type="number" id="r4" min="55" max="95" placeholder="67"></div>
+      <button class="primary" onclick="lookup()">Look up</button>
+    </div>
+    <div id="result"></div>
+  </div>
+  <div class="card">
+    <h2 id="recent-title">Most recent tournament</h2>
+    <div class="list" id="recent-list"><p class="loading">Loading...</p></div>
+  </div>
+</div>
+<script>
+let DB = null;
+
+async function loadData() {
+  try {
+    const res = await fetch('scorecards_data.json');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    DB = await res.json();
+    const SC = DB.scorecards;
+    const totalSC = Object.values(SC).reduce((a,v) => a+v.c, 0);
+    const maxGN = Math.max(...Object.values(SC).map(v => v.gn));
+    document.getElementById('sub-line').textContent =
+      'PGA Tour 2001–2026 · ' + totalSC.toLocaleString() + ' scorecards · ' +
+      Object.keys(SC).length.toLocaleString() + ' unique sequences · Golfigami #' +
+      maxGN.toLocaleString() + ' discovered';
+    document.getElementById('recent-title').textContent =
+      DB.latest.name + ' ' + DB.latest.season;
+    renderRecent();
+  } catch(e) {
+    document.getElementById('sub-line').textContent = 'PGA Tour 2001–2026';
+    document.getElementById('recent-list').innerHTML =
+      '<p class="error">Failed to load data: ' + e.message + '</p>';
+  }
+}
+
+function badge(p) {
+  if (p.c === 1) return `<span class="badge new">Golfigami #${p.gn.toLocaleString()}</span>`;
+  if (p.c <= 5)  return `<span class="badge rare">Rare · ${p.c}x</span>`;
+  return `<span class="badge common">${p.c}x</span>`;
+}
+
+function renderRecent() {
+  const rows = DB.latest.players.map(p => {
+    const parts = p.k.split('-');
+    return `<div class="row" onclick="fillLookup('${parts[0]}','${parts[1]}','${parts[2]}','${parts[3]}')">
+      <span class="row-left">
+        <span class="player">${p.n}</span>
+        <span class="rounds">${p.k.replace(/-/g,'–')} · ${p.t} total</span>
+      </span>
+      <span class="row-right">${badge(p)}</span>
+    </div>`;
+  }).join('');
+  document.getElementById('recent-list').innerHTML =
+    `<div class="list-header">PLAYERS — sorted by score <span>click to look up</span></div>` + rows;
+}
+
+function fillLookup(r1,r2,r3,r4) {
+  document.getElementById('r1').value = r1;
+  document.getElementById('r2').value = r2;
+  document.getElementById('r3').value = r3;
+  document.getElementById('r4').value = r4;
+  lookup();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function lookup() {
+  if (!DB) { alert('Data still loading, please wait a moment.'); return; }
+  const r1 = document.getElementById('r1').value.trim();
+  const r2 = document.getElementById('r2').value.trim();
+  const r3 = document.getElementById('r3').value.trim();
+  const r4 = document.getElementById('r4').value.trim();
+  const out = document.getElementById('result');
+  if (!r1||!r2||!r3||!r4) {
+    out.innerHTML = '<p style="color:#a32d2d;font-size:14px;padding:4px 0">Please enter all four scores.</p>';
+    return;
+  }
+  const key   = r1+'-'+r2+'-'+r3+'-'+r4;
+  const total = parseInt(r1)+parseInt(r2)+parseInt(r3)+parseInt(r4);
+  const SC    = DB.scorecards;
+  const match = SC[key];
+  const maxGN = Math.max(...Object.values(SC).map(v => v.gn));
+
+  if (!match) {
+    out.innerHTML = `<div class="banner golfigami">
+      <div class="banner-title">🎉 Golfigami!</div>
+      <div class="banner-sub">
+        ${r1}–${r2}–${r3}–${r4} (${total} total) has never been shot in a PGA Tour event.<br>
+        This would be <strong>Golfigami #${(maxGN+1).toLocaleString()}</strong>.
+      </div>
+    </div>`;
+  } else {
+    const count    = match.c;
+    const examples = match.e;
+    const rows = examples.map(e => `
+      <div class="row static-row">
+        <span class="row-left">
+          <span class="player">${e[0]}</span>
+          <span class="meta">${e[1]}</span>
+        </span>
+        <span class="row-right"><span class="year-tag">${e[2]}</span></span>
+      </div>`).join('');
+    const more = count > examples.length
+      ? `<div class="more">+ ${count - examples.length} more not shown</div>` : '';
+    const firstShot = match.fp
+      ? `First shot by <strong>${match.fp}</strong> at ${match.ft} (${match.fs}).` : '';
+    out.innerHTML = `
+      <div class="banner seen">
+        <div class="banner-title">Golfigami #${match.gn.toLocaleString()}</div>
+        <div class="banner-sub">
+          ${r1}–${r2}–${r3}–${r4} (${total} total) has been shot <strong>${count}×</strong> on tour.
+          Most recently by <strong>${match.mrn}</strong> (${match.mr}).<br>
+          ${firstShot}
+        </div>
+      </div>
+      <div class="list">
+        <div class="list-header">WHO'S SHOT IT <span>most recent first</span></div>
+        ${rows}${more}
+      </div>`;
+  }
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') lookup(); });
+loadData();
+</script>
+</body>
+</html>
