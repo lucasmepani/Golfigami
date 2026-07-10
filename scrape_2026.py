@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
 Golfigami - 2026 Backfill Script
-Fetches ALL completed 2026 PGA Tour tournaments from ESPN and merges into database.
+Scrapes ESPN leaderboard pages for all 2026 PGA Tour tournaments.
 Run once via GitHub Actions to backfill the full 2026 season.
 """
-import json, urllib.request, time
+import json, urllib.request, time, re
 from pathlib import Path
-from datetime import datetime
+from html.parser import HTMLParser
 
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?event={event_id}"
-DATA_FILE  = Path("scorecards_data.json")
-GNUM_FILE  = Path("golfigami_numbers.json")
-HTML_FILE  = Path("index.html")
+DATA_FILE = Path("scorecards_data.json")
+GNUM_FILE = Path("golfigami_numbers.json")
+HTML_FILE = Path("index.html")
 
 EXCLUDE = ['q-school', 'korn ferry', 'hero world', 'presidents cup', 'zurich classic']
 
-# All 2026 PGA Tour events in chronological order
+# All 2026 PGA Tour events: (ESPN tournament ID, name, season)
 EVENTS_2026 = [
     ("401811928", "Sony Open in Hawaii",                    "2026"),
     ("401811929", "The American Express",                   "2026"),
@@ -44,10 +43,65 @@ EVENTS_2026 = [
     ("401811953", "Travelers Championship",                 "2026"),
 ]
 
-def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def fetch_html(url):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    })
     with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read())
+        return r.read().decode('utf-8', errors='replace')
+
+def parse_leaderboard(html, tourn_name, season):
+    """Parse R1-R4 scores from ESPN leaderboard HTML table."""
+    scorecards = []
+    
+    # Extract table rows with scores
+    # Pattern: player name followed by score | R1 | R2 | R3 | R4 | TOT
+    # Find all table rows in the leaderboard
+    
+    # Look for the data in the table - ESPN renders scores in td elements
+    # Pattern matches: number scores in table cells
+    rows = re.findall(
+        r'<tr[^>]*>.*?</tr>',
+        html,
+        re.DOTALL
+    )
+    
+    for row in rows:
+        # Skip rows without 4 round scores
+        # Extract player name
+        name_match = re.search(r'golf/player[^"]*">([^<]+)</a>', row)
+        if not name_match:
+            continue
+        name = name_match.group(1).strip()
+        
+        # Extract all td numeric values
+        tds = re.findall(r'<td[^>]*>\s*(\d+)\s*</td>', row)
+        
+        # We need exactly R1, R2, R3, R4 as integers between 55-95
+        round_scores = [int(x) for x in tds if 55 <= int(x) <= 95]
+        
+        if len(round_scores) >= 4:
+            scorecards.append({
+                "name": name,
+                "tournament": tourn_name,
+                "season": season,
+                "r1": round_scores[0],
+                "r2": round_scores[1],
+                "r3": round_scores[2],
+                "r4": round_scores[3],
+            })
+    
+    return scorecards
+
+def fetch_event(event_id, tourn_name, season):
+    url = f"https://www.espn.com/golf/leaderboard?tournamentId={event_id}"
+    try:
+        html = fetch_html(url)
+        scorecards = parse_leaderboard(html, tourn_name, season)
+        return scorecards
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
 
 def load_json(path, default):
     return json.loads(path.read_text()) if path.exists() else default
@@ -55,38 +109,10 @@ def load_json(path, default):
 def next_gnum(gnum):
     return max((v["num"] for v in gnum.values()), default=0) + 1
 
-def extract_scorecards(event_id, tourn_name, season):
-    url = SCOREBOARD_URL.format(event_id=event_id)
-    try:
-        data = fetch(url)
-        events = data.get("events", [])
-        if not events:
-            return []
-        competitors = events[0].get("competitions", [{}])[0].get("competitors", [])
-        scorecards = []
-        for comp in competitors:
-            name = comp.get("athlete", {}).get("fullName", "Unknown")
-            rounds = {}
-            for ls in comp.get("linescores", []):
-                p = ls.get("period"); v = ls.get("value")
-                if p in (1,2,3,4) and v is not None:
-                    try: rounds[p] = int(float(v))
-                    except: pass
-            if len(rounds) == 4:
-                scorecards.append({
-                    "name": name, "tournament": tourn_name, "season": season,
-                    "r1": rounds[1], "r2": rounds[2],
-                    "r3": rounds[3], "r4": rounds[4],
-                })
-        return scorecards
-    except Exception as e:
-        print(f"  Error: {e}")
-        return []
-
 def merge(data, gnum, scorecards, season):
     added = new_g = 0
     counter = next_gnum(gnum)
-    # Assign Golfigami numbers worst-to-best (reverse sort by total)
+    # Worst finisher first (highest total = lowest Golfigami number)
     sorted_sc = sorted(scorecards, key=lambda s: s['r1']+s['r2']+s['r3']+s['r4'], reverse=True)
     for sc in sorted_sc:
         key   = f"{sc['r1']}-{sc['r2']}-{sc['r3']}-{sc['r4']}"
@@ -278,19 +304,19 @@ def main():
 
     for event_id, tourn_name, season in EVENTS_2026:
         print(f"Fetching: {tourn_name}...")
-        scorecards = extract_scorecards(event_id, tourn_name, season)
+        scorecards = fetch_event(event_id, tourn_name, season)
         if not scorecards:
-            print(f"  No complete scorecards (cancelled or in progress)")
-            time.sleep(0.5)
+            print(f"  No complete scorecards found")
+            time.sleep(1)
             continue
         print(f"  {len(scorecards)} complete scorecards")
         data, gnum = merge(data, gnum, scorecards, season)
         latest_name = tourn_name
         latest_season = season
         latest_scorecards = scorecards
-        time.sleep(0.75)
+        time.sleep(1.5)
 
-    print(f"\nDone. Total combos: {len(data)}, Total Golfigamis: {len(gnum)}")
+    print(f"\nDone. Total combos: {len(data)}, Golfigamis: {len(gnum)}")
 
     DATA_FILE.write_text(json.dumps(data, separators=(",",":")))
     GNUM_FILE.write_text(json.dumps(gnum, separators=(",",":")))
