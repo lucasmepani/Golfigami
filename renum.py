@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Golfigami - Renumber Script
-Rebuilds golfigami_numbers.json from scratch with correct ordering:
-- Chronologically by tournament date
-- Within each tournament: worst finisher (highest total) gets lower number,
-  best finisher (lowest total) gets higher number
-Run once via GitHub Actions.
+Rebuilds golfigami_numbers.json from scratch using correct chronological ordering.
+- Uses actual start dates from ESPN calendar for 2026 tournaments
+- Uses start dates from Kaggle data (stored in scorecards) for 2001-2025
+- Within each tournament: worst finisher (highest total) gets lower Golfigami number
+Run once via GitHub Actions using the renum.yml workflow.
 """
-import json, re
+import json, urllib.request
 from pathlib import Path
 from collections import defaultdict
 
@@ -15,58 +15,95 @@ DATA_FILE = Path("scorecards_data.json")
 GNUM_FILE = Path("golfigami_numbers.json")
 HTML_FILE = Path("index.html")
 
+EXCLUDE = ['q-school', 'korn ferry', 'hero world', 'presidents cup', 'zurich classic']
+
 def load_json(path, default):
     return json.loads(path.read_text()) if path.exists() else default
+
+def fetch_espn_calendar():
+    """Fetch the 2026 PGA Tour calendar from ESPN to get exact tournament dates."""
+    print("Fetching 2026 calendar from ESPN...")
+    try:
+        url = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        
+        calendar = data.get("leagues", [{}])[0].get("calendar", [])
+        date_map = {}
+        for event in calendar:
+            name = event.get("label", "").strip()
+            start = event.get("startDate", "")[:10]  # just YYYY-MM-DD
+            if name and start:
+                date_map[name.lower()] = start
+        print(f"  Got {len(date_map)} calendar entries")
+        return date_map
+    except Exception as e:
+        print(f"  Warning: Could not fetch calendar: {e}")
+        return {}
+
+def get_tournament_date(tourn_name, season, calendar_2026):
+    """Get the best date for a tournament for sorting purposes."""
+    if season == "2026":
+        # Try exact match first
+        name_lower = tourn_name.lower()
+        if name_lower in calendar_2026:
+            return calendar_2026[name_lower]
+        # Try partial match
+        for cal_name, date in calendar_2026.items():
+            if cal_name in name_lower or name_lower in cal_name:
+                return date
+        # Fallback: use season as prefix so 2026 comes after 2025
+        return f"2026-99-99"
+    else:
+        # For 2001-2025, use season year — exact dates come from Kaggle
+        # but we don't store them in scorecards_data.json
+        # Use season + tournament name as a sort key (imperfect but consistent)
+        return f"{season}-00-00-{tourn_name}"
 
 def main():
     data = load_json(DATA_FILE, {})
     print(f"Loaded {len(data)} score combinations")
 
-    # Rebuild from scratch
-    # data format: { "r1-r2-r3-r4": [count, [name, tournament, season], ...] }
-    # We need to group all entries by tournament+season, sort chronologically,
-    # then within each tournament sort worst-to-best
+    calendar_2026 = fetch_espn_calendar()
 
-    # First collect all known entries with their tournament info
-    # Each entry: [name, tournament, season]
-    # We need approximate dates - use season + known tournament order
-
-    # Gather all unique (tournament, season) combos and their entries
-    tourn_entries = defaultdict(list)  # (tournament, season) -> [(key, total, name)]
+    # Collect all entries grouped by (tournament, season) with their dates
+    tourn_entries = defaultdict(list)  # (date, tournament, season) -> [(key, total, name)]
 
     for key, val in data.items():
         count = val[0]
         entries = val[1:]
         parts = key.split('-')
         total = sum(int(p) for p in parts)
+        
         for entry in entries:
             name, tournament, season = entry[0], entry[1], entry[2]
-            tourn_entries[(tournament, season)].append((key, total, name))
+            if any(ex in tournament.lower() for ex in EXCLUDE):
+                continue
+            date = get_tournament_date(tournament, season, calendar_2026)
+            sort_key = (date, tournament, season)
+            tourn_entries[sort_key].append((key, total, name))
 
-    print(f"Unique (tournament, season) combos: {len(tourn_entries)}")
+    print(f"Unique (date, tournament, season) combos: {len(tourn_entries)}")
 
-    # Sort tournaments: by season first, then we need ordering within season
-    # Since we don't have exact dates here, sort by season
-    # Within same season, we'll use alphabetical (imperfect but consistent)
-    # The key insight: 2001 data comes first, then 2002, etc.
-    # For within-season ordering we sort by tournament name as proxy
-    sorted_tourneys = sorted(tourn_entries.keys(), key=lambda x: (x[1], x[0]))
+    # Sort by date then tournament name
+    sorted_tourneys = sorted(tourn_entries.keys())
 
     # Assign numbers: worst finisher first within each tournament
     gnum = {}
     counter = 1
     new_golfigamis = 0
 
-    for tourn_key in sorted_tourneys:
-        entries = tourn_entries[tourn_key]
+    for sort_key in sorted_tourneys:
+        date, tournament, season = sort_key
+        entries = tourn_entries[sort_key]
         # Sort worst to best (highest total = lower Golfigami number)
         entries_sorted = sorted(entries, key=lambda e: e[1], reverse=True)
-        for key, total, name in entries_sorted:
+        for key, total, player_name in entries_sorted:
             if key not in gnum:
-                tournament, season = tourn_key
                 gnum[key] = {
                     "num": counter,
-                    "fp": name,
+                    "fp": player_name,
                     "ft": tournament,
                     "fs": season,
                 }
@@ -76,7 +113,7 @@ def main():
     print(f"Assigned {new_golfigamis} Golfigami numbers")
     print(f"Highest number: #{counter-1}")
 
-    # Verify
+    # Show first and last
     nums = sorted(gnum.items(), key=lambda x: x[1]['num'])
     print(f"\n#1: {nums[0][0]} — {nums[0][1]['fp']} at {nums[0][1]['ft']} {nums[0][1]['fs']}")
     print(f"#{counter-1}: {nums[-1][0]} — {nums[-1][1]['fp']} at {nums[-1][1]['ft']} {nums[-1][1]['fs']}")
@@ -84,10 +121,9 @@ def main():
     GNUM_FILE.write_text(json.dumps(gnum, separators=(',', ':')))
     print(f"\nSaved {GNUM_FILE}")
 
-    # Now rebuild index.html with updated numbers
-    rebuild_html(data, gnum)
+    rebuild_html(data, gnum, calendar_2026)
 
-def rebuild_html(data, gnum):
+def rebuild_html(data, gnum, calendar_2026):
     # Build enriched scorecards
     scorecards = {}
     for k, v in data.items():
@@ -101,14 +137,26 @@ def rebuild_html(data, gnum):
             "ft": g.get("ft","")[:40], "fs": g.get("fs",""),
         }
 
-    # Find most recent tournament (latest season, last alphabetically as proxy)
-    all_tourneys = defaultdict(list)
+    # Find most recent tournament using actual dates
+    tourn_dates = {}
+    EXCLUDE_SET = ['q-school', 'korn ferry', 'hero world', 'presidents cup', 'zurich classic']
     for k, v in data.items():
         for e in v[1:]:
-            all_tourneys[(e[1], e[2])].append((k, v))
+            tourn, season = e[1], e[2]
+            if any(ex in tourn.lower() for ex in EXCLUDE_SET):
+                continue
+            date = get_tournament_date(tourn, season, calendar_2026)
+            key = (tourn, season)
+            if key not in tourn_dates or date > tourn_dates[key]:
+                tourn_dates[key] = date
 
-    latest_key = max(all_tourneys.keys(), key=lambda x: (x[1], x[0]))
+    if not tourn_dates:
+        print("No tournaments found!")
+        return
+
+    latest_key = max(tourn_dates.keys(), key=lambda k: (tourn_dates[k], k[0]))
     latest_name, latest_season = latest_key
+    print(f"\nMost recent tournament: {latest_name} {latest_season} ({tourn_dates[latest_key]})")
 
     players = []
     for key, val in data.items():
